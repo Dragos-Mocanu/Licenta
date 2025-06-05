@@ -1,0 +1,9 @@
+Cercetătorii de la Microsoft și Universitatea Stanford au lansat în luna aprilie un sistem de recunoaștere vocală avansat.
+
+Proiectul a fost desfășurat în laboratoarele din Seattle și București, folosind date colectate în anul 2023.
+
+Sistemul a fost testat pe mai multe limbi naturale, iar acuratețea a crescut cu 25% față de versiunile anterioare.
+
+Algoritmul a fost refăcut pentru a reduce latența în conversații, deoarece timpul de răspuns reprezintă un factor critic în aplicațiile vocale.
+
+De asemenea, arhitectura modelului a fost optimizată pentru că procesarea se face pe dispozitive mobile, unde resursele hardware sunt limitate.
