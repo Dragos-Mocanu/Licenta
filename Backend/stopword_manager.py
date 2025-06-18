@@ -1,11 +1,9 @@
 from typing import Set
-
 import nltk
 from nltk.corpus import stopwords
 
 class StopWordManager:
     _STOPWORDS: Set[str] | None = None
-
     @classmethod
     def load(cls) -> Set[str]:
         if cls._STOPWORDS is None:

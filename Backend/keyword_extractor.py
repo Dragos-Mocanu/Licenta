@@ -8,10 +8,8 @@ class KeywordExtractor:
     def __init__(self, nlp: "spacy.language.Language", stopwords: Set[str]) -> None:
         self.nlp = nlp
         self.stopwords = stopwords
-
     def _normalize(self, tok: "spacy.tokens.Token") -> str:
         return Normalizer.norm(tok.lemma_)
-
     def _rake_phrases(self, text: str) -> List[List[str]]:
         doc = self.nlp(text)
         phrases, current = [], []
@@ -24,7 +22,6 @@ class KeywordExtractor:
         if current:
             phrases.append(current)
         return [p for p in phrases if 1 <= len(p) <= 3]
-
     def _word_scores(self, phrases: List[List[str]]) -> Dict[str, float]:
         freq, deg = Counter(), defaultdict(int)
         for ph in phrases:
@@ -33,10 +30,8 @@ class KeywordExtractor:
                 freq[w] += 1
                 deg[w] += L - 1
         return {w: (deg[w] + freq[w]) / freq[w] for w in freq}
-
     def _phrase_scores(self, phrases: List[List[str]], w_scores: Dict[str, float]) -> Dict[str, float]:
         return {" ".join(ph): sum(w_scores[w] for w in ph) for ph in phrases}
-
     def rake(self, text: str, top_k: int = 10) -> List[Dict[str, float | str]]:
         phrases = self._rake_phrases(text)
         if not phrases:
@@ -44,7 +39,6 @@ class KeywordExtractor:
         w_scores = self._word_scores(phrases)
         p_scores = self._phrase_scores(phrases, w_scores)
         ranked = sorted(p_scores.items(), key=lambda x: x[1], reverse=True)
-
         seen, final = set(), []
         for phrase, score in ranked:
             norm = Normalizer.norm(phrase)
@@ -55,7 +49,6 @@ class KeywordExtractor:
             if len(final) == top_k:
                 break
         return final
-
     def textrank(
         self,
         doc: "spacy.tokens.Doc",
@@ -66,15 +59,15 @@ class KeywordExtractor:
         tol: float = 1e-5,
     ) -> tuple[list[dict], dict]:
         norm_lemmas = []
-        for tok in doc:
+        positions = []
+        for i, tok in enumerate(doc):
             if tok.pos_ in {"NOUN", "ADJ"} and tok.is_alpha:
                 norm = Normalizer.norm(tok.lemma_)
                 if norm not in self.stopwords:
                     norm_lemmas.append(norm)
-
+                    positions.append(i)
         if not norm_lemmas:
             return [], {"nodes": [], "links": []}
-
         vocab = list(dict.fromkeys(norm_lemmas))
         w2i = {w: i for i, w in enumerate(vocab)}
         W = np.zeros((len(vocab), len(vocab)), dtype=np.float32)
@@ -85,31 +78,47 @@ class KeywordExtractor:
                     continue
                 W[a, b] += 1
                 W[b, a] += 1
-
         row_sum = W.sum(axis=1, keepdims=True)
         M = np.divide(W, row_sum, where=row_sum != 0)
-        S = np.full(len(vocab), 1.0 / len(vocab), dtype=np.float32)
+        S = np.random.rand(len(vocab)).astype(np.float32)
         for _ in range(iters):
             prev = S.copy()
             S = (1 - d) + d * M.T @ prev
             if np.linalg.norm(S - prev, 1) < tol:
                 break
-
-        scores = list(zip(vocab, S))
-        scores.sort(key=lambda x: x[1], reverse=True)
-
-        seen, final = set(), []
-        for lemma, score in scores:
-            if lemma in seen:
-                continue
-            seen.add(lemma)
-            final.append({"keyword": lemma, "score": round(float(score), 4)})
-            if len(final) == top_k:
-                break
-
+        word_scores = dict(zip(vocab, S))
+        phrase_scores = {}
+        i = 0
+        while i < len(doc):
+            tok = doc[i]
+            if tok.pos_ in {"NOUN", "ADJ"} and tok.is_alpha:
+                norm1 = Normalizer.norm(tok.lemma_)
+                if norm1 in word_scores:
+                    if i + 1 < len(doc):
+                        tok2 = doc[i + 1]
+                        norm2 = Normalizer.norm(tok2.lemma_)
+                        if (
+                            tok2.pos_ in {"NOUN", "ADJ"}
+                            and tok2.is_alpha
+                            and norm2 in word_scores
+                        ):
+                            phrase = f"{norm1} {norm2}"
+                            score = word_scores[norm1] + word_scores[norm2]
+                            phrase_scores[phrase] = score
+                            i += 2
+                            continue
+                    phrase_scores[norm1] = word_scores[norm1]
+            i += 1
+        sorted_phrases = sorted(phrase_scores.items(), key=lambda x: x[1], reverse=True)
+        final = [
+            {"keyword": phrase, "score": round(float(score), 4)}
+            for phrase, score in sorted_phrases[:top_k]
+        ]
         nodes = [{"id": k["keyword"]} for k in final]
         links, used = [], set()
-        keys = {k["keyword"] for k in final}
+        keys = set()
+        for item in final:
+            keys.update(item["keyword"].split())
         for tok in doc:
             src = Normalizer.norm(tok.head.lemma_)
             tgt = Normalizer.norm(tok.lemma_)
@@ -121,5 +130,4 @@ class KeywordExtractor:
                     continue
                 used.add(edge)
                 links.append({"source": src, "target": tgt, "label": tok.dep_})
-
         return final, {"nodes": nodes, "links": links}
