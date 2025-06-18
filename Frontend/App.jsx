@@ -2,19 +2,6 @@ import React, { useState, useMemo, useRef, useEffect } from "react";
 import ForceGraph2D from "react-force-graph-2d";
 import { forceManyBody, forceLink, forceCollide } from "d3-force";
 
-const ROM_SUFFIXES = [
-  "ului", "ilor", "elor", "lui", "ul", "le", "lor", "ei", "a", "e", "i", "u", "ă",
-];
-
-const regexEscape = (str) =>
-  str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-
-const buildRegex = (lemma) => {
-  const safe = regexEscape(lemma);
-  const suf = ROM_SUFFIXES.join("|");
-  return new RegExp(`\\b${safe}(?:${suf})?\\b`, "gi");
-};
-
 export default function App() {
   const [text, setText] = useState("");
   const [tab, setTab] = useState("rake");
@@ -22,13 +9,12 @@ export default function App() {
     rake: [],
     textrank: [],
     relations: [],
-    kgGraph: { nodes: [], links: [] },
+    kg: { nodes: [], links: [] },
     qa: { who: [], what: [], where: [], when: [], why: [] },
-    nerFull: {},
+    ner: {},
   });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
-
   const fgRef = useRef();
   const taRef = useRef();
 
@@ -39,7 +25,7 @@ export default function App() {
     fg.d3Force("link", forceLink().distance(120).id((n) => n.id).strength(1));
     fg.d3Force("collide", forceCollide().radius(30));
     fg.d3AlphaTarget(0.3);
-  }, [results.kgGraph]);
+  }, [results.kg]);
 
   const sendRequest = async (form) => {
     setLoading(true);
@@ -56,9 +42,9 @@ export default function App() {
         rake: d.rake || [],
         textrank: d.textrank || [],
         relations: d.relations || [],
-        kgGraph: d.kgGraph || { nodes: [], links: [] },
+        kg: d.kg || { nodes: [], links: [] },
         qa: d.qa || { who: [], what: [], where: [], when: [], why: [] },
-        nerFull: d.nerFull || {},
+        ner: d.ner || {},
       });
       setTab("rake");
     } catch (e) {
@@ -114,9 +100,7 @@ export default function App() {
         <h1 className="text-center text-primary mb-4">
           Information extraction from Romanian texts
         </h1>
-
         {error && <div className="alert alert-danger">{error}</div>}
-
         <textarea
           ref={taRef}
           className="form-control mb-3"
@@ -124,7 +108,6 @@ export default function App() {
           value={text}
           onChange={(e) => setText(e.target.value)}
         />
-
         <div className="d-flex flex-wrap gap-3 mb-3">
           <label className="btn btn-outline-primary mb-0">
             Upload PDF
@@ -159,7 +142,6 @@ export default function App() {
             )}
           </button>
         </div>
-
         <ul className="nav nav-tabs">
           {["rake", "textrank", "ner", "relations", "kg", "qa"].map((t) => (
             <li key={t} className="nav-item">
@@ -172,7 +154,6 @@ export default function App() {
             </li>
           ))}
         </ul>
-
         <div className="mt-3">
           {["rake", "textrank"].includes(tab) &&
             (results[tab].length === 0 ? (
@@ -186,10 +167,9 @@ export default function App() {
                 </div>
               ))
             ))}
-
           {tab === "ner" &&
             (() => {
-              const nerData = results.nerFull || {};
+              const nerData = results.ner || {};
               const entries = Object.entries(nerData);
               return entries.length === 0 ? (
                 <div className="text-muted">No named entities found.</div>
@@ -208,7 +188,6 @@ export default function App() {
                 ))
               );
             })()}
-
           {tab === "relations" &&
             (results.relations.length === 0 ? (
               <div className="text-muted">No relations extracted.</div>
@@ -222,18 +201,16 @@ export default function App() {
                 </div>
               ))
             ))}
-
           {tab === "kg" &&
-            (results.kgGraph.nodes.length === 0 ? (
+            (results.kg.nodes.length === 0 ? (
               <div className="text-muted">
                 Graph unavailable – run analysis first.
               </div>
             ) : (
               <div style={{ height: 500 }}>
-                <Graph data={results.kgGraph} />
+                <Graph data={results.kg} />
               </div>
             ))}
-
           {tab === "qa" && (
             <div className="row">
               {["who", "what", "where", "when", "why"].map((key) => (
@@ -242,7 +219,7 @@ export default function App() {
                     <div className="card-header text-uppercase fw-bold">{key}</div>
                     <div className="card-body">
                       {results.qa[key]?.length === 0 ? (
-                        <p className="text-muted mb-0">Nimic găsit.</p>
+                        <p className="text-muted mb-0"> Nothing found.</p>
                       ) : (
                         <ul className="mb-0">
                           {results.qa[key].map((v, i) => (
