@@ -1,109 +1,134 @@
 from typing import Any, Dict, Set, List
 import spacy
+import re
 from stopword_manager import StopWordManager
 from keyword_extractor import KeywordExtractor
 from triple_extractor import TripleExtractor
 from utils import Normalizer
 
+# Main class responsible for processing text and extracting information
 class TextAnalyzer:
     def __init__(self) -> None:
+        # Load Romanian language model
         self.nlp = spacy.load("ro_core_news_lg")
+
+        # Load stopwords
         self.stopwords: Set[str] = StopWordManager.load()
-        self.kw = KeywordExtractor(self.nlp, self.stopwords)
-        self.trp = TripleExtractor(self.nlp, self.stopwords)
-    def _attach_ner(self, items: List[Dict], ents: Dict[str, str]) -> List[Dict]:
-        for item in items:
-            label = ents.get(item["keyword"])
-            if label:
-                item["ner"] = label
-        return items
+
+        # Keyword extractor (RAKE + TextRank)
+        self.keyword_extractor = KeywordExtractor(self.nlp, self.stopwords)
+
+        # Triplet extractor (subject–predicate–object)
+        self.triple_extractor = TripleExtractor(self.nlp)
+
+    # Normalize and split all keywords into individual tokens
     def _token_set(self, keywords: Set[str]) -> Set[str]:
         return {Normalizer.norm(w) for kw in keywords for w in kw.split()}
+
+    # Extract dependency-based relations
     def _extract_relations(self, doc: "spacy.tokens.Doc", keywords: Set[str]) -> List[Dict]:
-        rels, seen = [], set()
-        kw_tokens = self._token_set(keywords)
-        for tok in doc:
-            src = Normalizer.norm(tok.head.lemma_)
-            tgt = Normalizer.norm(tok.lemma_)
-            if src == tgt:
+        relations, seen_relations = [], set()
+        keyword_tokens = self._token_set(keywords)
+        for token in doc:
+            source = Normalizer.norm(token.head.lemma_)
+            target = Normalizer.norm(token.lemma_)
+            if source == target:
                 continue
-            if src in kw_tokens or tgt in kw_tokens:
-                edge = (src, tok.dep_, tgt)
-                if edge in seen:
+            if source in keyword_tokens or target in keyword_tokens:
+                edge = (source, token.dep_, target)
+                if edge in seen_relations:
                     continue
-                seen.add(edge)
-                rels.append({"source": src, "label": tok.dep_, "target": tgt})
-        return rels
+                seen_relations.add(edge)
+                relations.append({"source": source, "label": token.dep_, "target": target})
+        return relations
+
+    # Main method to perform text analysis and return all results
     def analyze(self, txt: str) -> Dict[str, Any]:
         doc = self.nlp(txt)
-        ents = {}
+
+        # Named Entity Recognition
+        entities = {}
         for ent in doc.ents:
             ent_text = Normalizer.norm(ent.text.strip())
-            ents[ent_text] = ent.label_
-        for tok in doc:
-            norm_tok = Normalizer.norm(tok.text.strip())
-            if tok.ent_type_ and norm_tok not in ents:
-                ents[norm_tok] = tok.ent_type_
-        rake_kw = self._attach_ner(self.kw.rake(txt), ents)
-        tr_kw, _ = self.kw.textrank(doc)
-        tr_kw = self._attach_ner(tr_kw, ents)
-        kw_phrases = {k["keyword"] for k in rake_kw} | {k["keyword"] for k in tr_kw}
-        relations = self._extract_relations(doc, kw_phrases)
-        triples = self.trp.extract(doc)
-        kg = self.trp.to_graph(triples)
+            entities[ent_text] = ent.label_
+        for token in doc:
+            norm_token = Normalizer.norm(token.text.strip())
+            if token.ent_type_ and norm_token not in entities:
+                entities[norm_token] = token.ent_type_
+
+        # Keyword Extraction
+        rake_keywords = self.keyword_extractor.rake(txt)
+        textrank_keywords = self.keyword_extractor.textrank(doc)
+
+        # Dependency Relations
+        keyword_phrases = {k["keyword"] for k in rake_keywords} | {k["keyword"] for k in textrank_keywords}
+        relations = self._extract_relations(doc, keyword_phrases)
+
+        # Triplet Extraction
+        triples = self.triple_extractor.extract(doc)
+        kg = self.triple_extractor.to_graph(triples)
+
+        # Question Answering
         qa = {"who": [], "what": [], "where": [], "when": [], "why": []}
-        for tok in doc:
-            if tok.dep_ in {"nsubj", "nsubjpass"} and tok.head.pos_ in {"VERB", "AUX"}:
-                qa["who"].append(f"{Normalizer.norm(tok.text)} {Normalizer.norm(tok.head.lemma_)}")
-        for s, p, o in triples:
-            if p and o:
-                qa["what"].append(f"{p} {o}")
-        for key, label in ents.items():
+
+        # WHO: Find subject–verb pairs
+        for token in doc:
+            if token.dep_ in {"nsubj", "nsubjpass"} and token.head.pos_ in {"VERB", "AUX"}:
+                qa["who"].append(f"{Normalizer.norm(token.lemma_)} {Normalizer.norm(token.head.lemma_)}")
+
+        # WHAT: Extract predicate–object from triplets
+        for subj, pred, obj in triples:
+            if pred and obj and pred not in {"amod", "nmod"}:
+                qa["what"].append(f"{pred} {obj}")
+
+        # WHERE/WHEN: Based on NER labels
+        for key, label in entities.items():
             if label in {"LOC", "GPE", "FACILITY"}:
                 qa["where"].append(key)
             elif label in {"DATE", "TIME", "DATETIME"}:
                 qa["when"].append(key)
-        for tok in doc:
-            if tok.dep_ in {"obl", "prep"}:
-                if tok.ent_type_ in {"DATE", "TIME", "DATETIME"}:
-                    qa["when"].append(Normalizer.norm(tok.text))
-                elif tok.ent_type_ in {"LOC", "GPE", "FACILITY"}:
-                    qa["where"].append(Normalizer.norm(tok.text))
-        qa["when"] = [w for w in qa["when"] if w not in {"anul", "luna"}]
+
+        # WHY: Look for causal phrases in raw text
         cause_phrases = []
         cause_markers = ["pentru că", "deoarece", "fiindcă", "din cauză că", "căci"]
         lowered = txt.lower()
         for marker in cause_markers:
-            idx = lowered.find(marker)
-            if idx != -1:
-                fragment = lowered[idx:idx+200].split(".")[0].strip()
+            for match in re.finditer(rf"\b{re.escape(marker)}\b", lowered):
+                idx = match.start()
+                fragment = lowered[idx:idx + 200].split(".")[0].strip()
                 cause_phrases.append(fragment)
         qa["why"].extend(Normalizer.norm(p) for p in cause_phrases)
+
+        # QA remove duplicates
         for key in qa:
             seen = set()
             phrases = sorted(qa[key], key=lambda x: -len(x.split()))
             clean = []
-            for p in phrases:
-                if p not in seen and not any(p != o and p in o for o in clean):
-                    clean.append(p)
-                    seen.add(p)
+            for phrase in phrases:
+                if phrase not in seen and not any(phrase != other and phrase in other for other in clean):
+                    clean.append(phrase)
+                    seen.add(phrase)
             qa[key] = clean
+
+        # NER remove duplicates
         ner_by_label = {}
-        for ent_text, label in ents.items():
+        for ent_text, label in entities.items():
             if label not in ner_by_label:
                 ner_by_label[label] = []
             ner_by_label[label].append(ent_text)
         for label in ner_by_label:
             phrases = sorted(ner_by_label[label], key=lambda x: -len(x.split()))
             clean = []
-            for p in phrases:
-                if not any(p in o and p != o for o in clean):
-                    clean.append(p)
+            for phrase in phrases:
+                if not any(phrase in other and phrase != other for other in clean):
+                    clean.append(phrase)
             ner_by_label[label] = clean
+
+        # Final Result
         return {
             "extractedText": txt,
-            "rake": rake_kw,
-            "textrank": tr_kw,
+            "rake": rake_keywords,
+            "textrank": textrank_keywords,
             "relations": relations,
             "kg": kg,
             "triples": [

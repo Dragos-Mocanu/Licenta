@@ -4,104 +4,133 @@ import numpy as np
 import spacy
 from utils import Normalizer
 
+# Extracts keywords using RAKE and TextRank
 class KeywordExtractor:
     def __init__(self, nlp: "spacy.language.Language", stopwords: Set[str]) -> None:
-        self.nlp = nlp
-        self.stopwords = stopwords
-    def _normalize(self, tok: "spacy.tokens.Token") -> str:
-        return Normalizer.norm(tok.lemma_)
+        self.nlp = nlp  # SpaCy pipeline
+        self.stopwords = stopwords  # Custom stopword set
+
+    # Normalize a token using lemmatization
+    def _normalize(self, token: "spacy.tokens.Token") -> str:
+        return Normalizer.norm(token.lemma_)
+
+    # RAKE IMPLEMENTATION
+
+    # Extract candidate phrases (1 to 3 words, non-stopwords, alphabetic)
     def _rake_phrases(self, text: str) -> List[List[str]]:
         doc = self.nlp(text)
-        phrases, current = [], []
-        for tok in doc:
-            if tok.is_alpha and self._normalize(tok) not in self.stopwords:
-                current.append(self._normalize(tok))
-            elif current:
-                phrases.append(current)
-                current = []
-        if current:
-            phrases.append(current)
-        return [p for p in phrases if 1 <= len(p) <= 3]
+        phrase_list = []
+        current_phrase = []
+        for token in doc:
+            if token.is_alpha and self._normalize(token) not in self.stopwords:
+                current_phrase.append(self._normalize(token))
+            elif current_phrase:
+                phrase_list.append(current_phrase)
+                current_phrase = []
+        if current_phrase:
+            phrase_list.append(current_phrase)
+        return [phrase for phrase in phrase_list if 1 <= len(phrase) <= 3]
+
+    # Compute word scores using frequency and degree
     def _word_scores(self, phrases: List[List[str]]) -> Dict[str, float]:
-        freq, deg = Counter(), defaultdict(int)
-        for ph in phrases:
-            L = len(ph)
-            for w in ph:
-                freq[w] += 1
-                deg[w] += L - 1
-        return {w: (deg[w] + freq[w]) / freq[w] for w in freq}
-    def _phrase_scores(self, phrases: List[List[str]], w_scores: Dict[str, float]) -> Dict[str, float]:
-        return {" ".join(ph): sum(w_scores[w] for w in ph) for ph in phrases}
+        word_freq = Counter()
+        word_degree = defaultdict(int)
+        for phrase in phrases:
+            length = len(phrase)
+            for word in phrase:
+                word_freq[word] += 1
+                word_degree[word] += length - 1
+        return {word: (word_degree[word] + word_freq[word]) / word_freq[word] for word in word_freq}
+
+    # Compute phrase scores by summing word scores
+    def _phrase_scores(self, phrases: List[List[str]], word_scores: Dict[str, float]) -> Dict[str, float]:
+        return {
+            " ".join(phrase): sum(word_scores[word] for word in phrase)
+            for phrase in phrases
+        }
+
+    # Public RAKE method to extract top-k keywords
     def rake(self, text: str, top_k: int = 10) -> List[Dict[str, float | str]]:
         phrases = self._rake_phrases(text)
         if not phrases:
             return []
-        w_scores = self._word_scores(phrases)
-        p_scores = self._phrase_scores(phrases, w_scores)
-        ranked = sorted(p_scores.items(), key=lambda x: x[1], reverse=True)
-        seen, final = set(), []
-        for phrase, score in ranked:
-            norm = Normalizer.norm(phrase)
-            if norm in seen:
+        word_scores = self._word_scores(phrases)
+        phrase_scores = self._phrase_scores(phrases, word_scores)
+        sorted_phrases = sorted(phrase_scores.items(), key=lambda x: x[1], reverse=True)
+        seen_norms = set()
+        final_keywords = []
+        for phrase, score in sorted_phrases:
+            normalized = Normalizer.norm(phrase)
+            if normalized in seen_norms:
                 continue
-            seen.add(norm)
-            final.append({"keyword": phrase, "score": round(float(score), 4)})
-            if len(final) == top_k:
+            seen_norms.add(normalized)
+            final_keywords.append({"keyword": phrase, "score": round(float(score), 4)})
+            if len(final_keywords) == top_k:
                 break
-        return final
+        return final_keywords
+
+    # TEXTRANK IMPLEMENTATION
+
     def textrank(
         self,
         doc: "spacy.tokens.Doc",
         top_k: int = 10,
         window: int = 4,
         d: float = 0.85,
-        iters: int = 100,
+        iters: int = 1000,
         tol: float = 1e-5,
     ) -> tuple[list[dict], dict]:
-        norm_lemmas = []
-        positions = []
-        for i, tok in enumerate(doc):
-            if tok.pos_ in {"NOUN", "ADJ"} and tok.is_alpha:
-                norm = Normalizer.norm(tok.lemma_)
-                if norm not in self.stopwords:
-                    norm_lemmas.append(norm)
-                    positions.append(i)
-        if not norm_lemmas:
+
+        # Step 1: Extract candidate lemmas (nouns and adjectives)
+        candidate_lemmas = []
+        token_positions = []
+        for i, token in enumerate(doc):
+            if token.pos_ in {"NOUN", "ADJ"} and token.is_alpha:
+                norm_lemma = Normalizer.norm(token.lemma_)
+                if norm_lemma not in self.stopwords:
+                    candidate_lemmas.append(norm_lemma)
+                    token_positions.append(i)
+        if not candidate_lemmas:
             return [], {"nodes": [], "links": []}
-        vocab = list(dict.fromkeys(norm_lemmas))
-        w2i = {w: i for i, w in enumerate(vocab)}
-        W = np.zeros((len(vocab), len(vocab)), dtype=np.float32)
-        for i in range(len(norm_lemmas)):
-            for j in range(i + 1, min(i + window, len(norm_lemmas))):
-                a, b = w2i[norm_lemmas[i]], w2i[norm_lemmas[j]]
+
+        # Step 2: Build graph (co-occurrence within window)
+        vocab_list = list(dict.fromkeys(candidate_lemmas))  # preserve order
+        word_to_index = {word: i for i, word in enumerate(vocab_list)}
+        adjacency_matrix = np.zeros((len(vocab_list), len(vocab_list)), dtype=np.float32)
+
+        for i in range(len(candidate_lemmas)):
+            for j in range(i + 1, min(i + window, len(candidate_lemmas))):
+                a, b = word_to_index[candidate_lemmas[i]], word_to_index[candidate_lemmas[j]]
                 if a == b:
                     continue
-                W[a, b] += 1
-                W[b, a] += 1
-        row_sum = W.sum(axis=1, keepdims=True)
-        M = np.divide(W, row_sum, where=row_sum != 0)
-        S = np.random.rand(len(vocab)).astype(np.float32)
+                adjacency_matrix[a, b] += 1
+                adjacency_matrix[b, a] += 1
+
+        # Step 3: Normalize matrix and run PageRank
+        row_sums = adjacency_matrix.sum(axis=1, keepdims=True)
+        transition_matrix = np.divide(adjacency_matrix, row_sums, where=row_sums != 0)
+        scores = np.random.rand(len(vocab_list)).astype(np.float32)
+
         for _ in range(iters):
-            prev = S.copy()
-            S = (1 - d) + d * M.T @ prev
-            if np.linalg.norm(S - prev, 1) < tol:
+            prev_scores = scores.copy()
+            scores = (1 - d) + d * transition_matrix.T @ prev_scores
+            if np.linalg.norm(scores - prev_scores, 1) < tol:
                 break
-        word_scores = dict(zip(vocab, S))
+
+        word_scores = dict(zip(vocab_list, scores))
+
+        # Step 4: Combine adjacent noun/adj into phrases and score them
         phrase_scores = {}
         i = 0
         while i < len(doc):
-            tok = doc[i]
-            if tok.pos_ in {"NOUN", "ADJ"} and tok.is_alpha:
-                norm1 = Normalizer.norm(tok.lemma_)
+            token = doc[i]
+            if token.pos_ in {"NOUN", "ADJ"} and token.is_alpha:
+                norm1 = Normalizer.norm(token.lemma_)
                 if norm1 in word_scores:
                     if i + 1 < len(doc):
-                        tok2 = doc[i + 1]
-                        norm2 = Normalizer.norm(tok2.lemma_)
-                        if (
-                            tok2.pos_ in {"NOUN", "ADJ"}
-                            and tok2.is_alpha
-                            and norm2 in word_scores
-                        ):
+                        token2 = doc[i + 1]
+                        norm2 = Normalizer.norm(token2.lemma_)
+                        if token2.pos_ in {"NOUN", "ADJ"} and token2.is_alpha and norm2 in word_scores:
                             phrase = f"{norm1} {norm2}"
                             score = word_scores[norm1] + word_scores[norm2]
                             phrase_scores[phrase] = score
@@ -109,25 +138,12 @@ class KeywordExtractor:
                             continue
                     phrase_scores[norm1] = word_scores[norm1]
             i += 1
+
+        # Step 5: Sort phrases and prepare return values
         sorted_phrases = sorted(phrase_scores.items(), key=lambda x: x[1], reverse=True)
-        final = [
+        top_phrases = [
             {"keyword": phrase, "score": round(float(score), 4)}
             for phrase, score in sorted_phrases[:top_k]
         ]
-        nodes = [{"id": k["keyword"]} for k in final]
-        links, used = [], set()
-        keys = set()
-        for item in final:
-            keys.update(item["keyword"].split())
-        for tok in doc:
-            src = Normalizer.norm(tok.head.lemma_)
-            tgt = Normalizer.norm(tok.lemma_)
-            if src == tgt:
-                continue
-            if src in keys or tgt in keys:
-                edge = (src, tgt, tok.dep_)
-                if edge in used:
-                    continue
-                used.add(edge)
-                links.append({"source": src, "target": tgt, "label": tok.dep_})
-        return final, {"nodes": nodes, "links": links}
+
+        return top_phrases
