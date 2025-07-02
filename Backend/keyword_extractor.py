@@ -49,7 +49,7 @@ class KeywordExtractor:
             for phrase in phrases
         }
 
-    # Public RAKE method to extract top-k keywords
+    # RAKE method to extract top-k keywords
     def rake(self, text: str, top_k: int = 10) -> List[Dict[str, float | str]]:
         phrases = self._rake_phrases(text)
         if not phrases:
@@ -77,24 +77,21 @@ class KeywordExtractor:
         top_k: int = 10,
         window: int = 4,
         d: float = 0.85,
-        iters: int = 1000,
-        tol: float = 1e-5,
+        convergence_threshold: float = 1e-5,
     ) -> tuple[list[dict], dict]:
 
         # Step 1: Extract candidate lemmas (nouns and adjectives)
         candidate_lemmas = []
-        token_positions = []
         for i, token in enumerate(doc):
             if token.pos_ in {"NOUN", "ADJ"} and token.is_alpha:
                 norm_lemma = Normalizer.norm(token.lemma_)
                 if norm_lemma not in self.stopwords:
                     candidate_lemmas.append(norm_lemma)
-                    token_positions.append(i)
         if not candidate_lemmas:
-            return [], {"nodes": [], "links": []}
+            return []
 
         # Step 2: Build graph (co-occurrence within window)
-        vocab_list = list(dict.fromkeys(candidate_lemmas))  # preserve order
+        vocab_list = list(dict.fromkeys(candidate_lemmas))
         word_to_index = {word: i for i, word in enumerate(vocab_list)}
         adjacency_matrix = np.zeros((len(vocab_list), len(vocab_list)), dtype=np.float32)
 
@@ -111,15 +108,15 @@ class KeywordExtractor:
         transition_matrix = np.divide(adjacency_matrix, row_sums, where=row_sums != 0)
         scores = np.random.rand(len(vocab_list)).astype(np.float32)
 
-        for _ in range(iters):
+        while True:
             prev_scores = scores.copy()
             scores = (1 - d) + d * transition_matrix.T @ prev_scores
-            if np.linalg.norm(scores - prev_scores, 1) < tol:
+            if np.linalg.norm(scores - prev_scores, 1) < convergence_threshold:
                 break
 
         word_scores = dict(zip(vocab_list, scores))
 
-        # Step 4: Combine adjacent noun/adj into phrases and score them
+        # Step 4: Combine adjacent words into phrases and score them
         phrase_scores = {}
         i = 0
         while i < len(doc):
@@ -139,7 +136,7 @@ class KeywordExtractor:
                     phrase_scores[norm1] = word_scores[norm1]
             i += 1
 
-        # Step 5: Sort phrases and prepare return values
+        # Step 5: Sort phrases and return values
         sorted_phrases = sorted(phrase_scores.items(), key=lambda x: x[1], reverse=True)
         top_phrases = [
             {"keyword": phrase, "score": round(float(score), 4)}
