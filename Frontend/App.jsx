@@ -1,8 +1,9 @@
-import React, { useState, useMemo, useRef, useEffect } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import ForceGraph2D from "react-force-graph-2d";
 import { forceManyBody, forceLink, forceCollide } from "d3-force";
 
 export default function App() {
+  // STATE MANAGEMENT
   const [text, setText] = useState("");
   const [tab, setTab] = useState("rake");
   const [results, setResults] = useState({
@@ -18,6 +19,7 @@ export default function App() {
   const fgRef = useRef();
   const taRef = useRef();
 
+  // GRAPH PHYSICS SETUP
   useEffect(() => {
     const fg = fgRef.current;
     if (!fg) return;
@@ -27,6 +29,7 @@ export default function App() {
     fg.d3AlphaTarget(0.3);
   }, [results.kg]);
 
+  // API REQUEST FUNCTION
   const sendRequest = async (form) => {
     setLoading(true);
     setError(null);
@@ -54,6 +57,7 @@ export default function App() {
     }
   };
 
+  // FILE UPLOAD HANDLER
   const handleUpload = (e) => {
     const f = e.target.files?.[0];
     if (!f) return;
@@ -63,13 +67,15 @@ export default function App() {
     e.target.value = "";
   };
 
+  // TEXT SUBMISSION HANDLER
   const handleSubmit = () => {
-    if (!text.trim()) return setError("Introduceţi text mai întâi!");
+    if (!text.trim()) return setError("Insert text!");
     const form = new FormData();
     form.append("text", text);
     sendRequest(form);
   };
 
+  // GRAPH COMPONENT
   const Graph = ({ data }) => (
     <ForceGraph2D
       ref={fgRef}
@@ -94,13 +100,18 @@ export default function App() {
     />
   );
 
+  // MAIN RENDER
   return (
     <div className="container py-5">
       <div className="card shadow p-4">
         <h1 className="text-center text-primary mb-4">
           Information extraction from Romanian texts
         </h1>
+
+        {/* Error message */}
         {error && <div className="alert alert-danger">{error}</div>}
+
+        {/* Text input area */}
         <textarea
           ref={taRef}
           className="form-control mb-3"
@@ -108,6 +119,8 @@ export default function App() {
           value={text}
           onChange={(e) => setText(e.target.value)}
         />
+
+        {/* Upload buttons and analyze action */}
         <div className="d-flex flex-wrap gap-3 mb-3">
           <label className="btn btn-outline-primary mb-0">
             Upload PDF
@@ -142,6 +155,8 @@ export default function App() {
             )}
           </button>
         </div>
+
+        {/* Tabs for different result types */}
         <ul className="nav nav-tabs">
           {["rake", "textrank", "ner", "relations", "kg", "qa"].map((t) => (
             <li key={t} className="nav-item">
@@ -154,7 +169,10 @@ export default function App() {
             </li>
           ))}
         </ul>
+
+        {/* Tab content rendering */}
         <div className="mt-3">
+          {/* RAKE and TextRank keyword display */}
           {["rake", "textrank"].includes(tab) &&
             (results[tab].length === 0 ? (
               <div className="text-muted">No keywords extracted.</div>
@@ -167,6 +185,8 @@ export default function App() {
                 </div>
               ))
             ))}
+
+          {/* Named Entity Recognition */}
           {tab === "ner" &&
             (() => {
               const nerData = results.ner || {};
@@ -188,6 +208,8 @@ export default function App() {
                 ))
               );
             })()}
+
+          {/* Relations */}
           {tab === "relations" &&
             (results.relations.length === 0 ? (
               <div className="text-muted">No relations extracted.</div>
@@ -201,6 +223,8 @@ export default function App() {
                 </div>
               ))
             ))}
+
+          {/* Knowledge Graph */}
           {tab === "kg" &&
             (results.kg.nodes.length === 0 ? (
               <div className="text-muted">
@@ -211,6 +235,8 @@ export default function App() {
                 <Graph data={results.kg} />
               </div>
             ))}
+
+          {/* QA Results */}
           {tab === "qa" && (
             <div className="row">
               {["who", "what", "where", "when", "why"].map((key) => (
